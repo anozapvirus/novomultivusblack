@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+	<title>Multivus</title>
+	<meta http-equiv="cache-control" content=”no-cache, no-store, must-revalidate”>
+	<meta http-equiv="pragma" content="no-cache">
+	<meta http-equiv="expires" content="0">
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap" rel="stylesheet">
+	<link rel="apple-touch-icon" href="%PUBLIC_URL%/apple-touch-icon.png" />
+	<link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+	<link rel="shortcut icon" href="%PUBLIC_URL%/favicon.ico">
+	<link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+	<meta name="theme-color" content="#000000" />
+	<meta name="viewport" content="minimum-scale=1, initial-scale=1, width=device-width" />
+	<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+	<meta http-equiv="Pragma" content="no-cache">
+	<meta http-equiv="Expires" content="0">
+	<link rel="preload" href="%PUBLIC_URL%/logo_icon.svg" as="image" type="image/svg+xml">
+	<style>
+		/* Basic styles for the splash screen */
+		body {
+			font-family: 'Poppins', sans-serif !important;
+		}
+		header {
+			border: none !important;
+		}
+		#splash-screen {
+			position: fixed;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			display: flex;
+			flex-direction: column;
+			justify-content: center;
+			align-items: center;
+			background-color: #111416; /* Cor e opacidade da camada semi-transparente */
+			/* 50% grey */
+			z-index: 9999;
+		}
+
+        #splash-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .loading-text {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #666; /* Cor do texto de carregamento */
+        }
+
+        .loading-logo {
+            width: 100px; /* Ajuste conforme o tamanho da sua logo */
+            height: 100px; /* Ajuste conforme o tamanho da sua logo */
+            animation: pulse 1s ease-in-out infinite;
+            margin-bottom: 20px;
+            background: transparent url('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7') no-repeat center;
+            object-fit: contain;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .loading-logo.loaded {
+            opacity: 1;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+		.progress-bar {
+			width: 80%;
+			height: 10px;
+			background-color: #d3d3d3;
+			/* light grey */
+			border-radius: 10px;
+			overflow: hidden;
+		}
+
+		.progress {
+			height: 100%;
+			background-color: #4baff8;
+			/* black */
+			width: 0;
+			transition: width 0.2s;
+		}
+	</style>
+	<!-- Issue workaround for React v16. -->
+	<script>
+        // See https://github.com/facebook/react/issues/20829#issuecomment-802088260
+        if (!crossOriginIsolated) SharedArrayBuffer = ArrayBuffer;
+    </script>
+    <script>
+      // Definir process global para compatibilidade
+      window.process = {
+        env: {
+          NODE_ENV: 'development',
+          REACT_APP_BACKEND_URL: 'http://localhost:8080'
+        }
+      };
+    </script>
+</head>
+
+<body>
+	<div id="splash-screen">
+		<div id="splash-content">
+            <img 
+                src="%PUBLIC_URL%/logo_icon.svg" 
+                alt="Logo" 
+                class="loading-logo" 
+                onload="this.classList.add('loaded')"
+            >
+            <!-- <div class="loading-text">Carregando...</div> -->
+            <div class="progress-bar">
+                <div class="progress" id="progress-bar"></div>
+            </div>
+        </div>
+	</div>
+	<div id="root"></div>
+	<noscript>You need to enable JavaScript to run this app.</noscript>
+	<div id="root"></div>
+	<script>
+		// Simulate progress update
+		progress = 0;
+		const progressBar = document.getElementById('progress-bar');
+		const interval = setInterval(() => {
+		  if (progress < 50) {
+		    progress += 10;
+		  } else if (progress < 80) {
+		    progress += 3;
+		  } else if (progress < 99) {
+		    progress += ( (99-progress) / 20 );
+		  }
+		  progressBar.style.width = progress + '%';
+		  
+		  if (progress >= 100) {
+        clearInterval(interval);
+		    setTimeout(() => {
+          const splashScreen = document.getElementById('splash-screen');
+          splashScreen.remove();
+		    }, 500);
+		  }
+		}, 1000);
+    window.finishProgress=() => {
+      progress = 100;
+    }
+	// Remover a tela de carregamento quando todos os elementos terminarem de carregar
+	window.onload = () => {
+            const splashOverlay = document.getElementById('splash-overlay');
+            // splashOverlay.remove();
+        };
+	</script>	
+</body>
+
+</html>

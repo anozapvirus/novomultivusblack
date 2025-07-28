@@ -1,0 +1,6 @@
+{
+  "backendUrl": "http://localhost:8080",
+  "frontendUrl": "http://localhost:3000",
+  "socketUrl": "http://localhost:8080",
+  "apiUrl": "http://localhost:8080"
+} 

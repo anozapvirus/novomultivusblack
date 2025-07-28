@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste do Dicionário</title>
+</head>
+<body>
+    <h1>Teste de Carregamento do Dicionário</h1>
+    <div id="status">Carregando...</div>
+    
+    <script>
+        async function testDictionary() {
+            const statusDiv = document.getElementById('status');
+            
+            try {
+                // Testar carregamento do arquivo .aff
+                const affResponse = await fetch('/dictionaries/pt_BR.aff');
+                if (!affResponse.ok) {
+                    throw new Error(`Erro ao carregar .aff: ${affResponse.status}`);
+                }
+                const affText = await affResponse.text();
+                console.log('Arquivo .aff carregado:', affText.substring(0, 100) + '...');
+                
+                // Testar carregamento do arquivo .dic
+                const dicResponse = await fetch('/dictionaries/pt_BR.dic');
+                if (!dicResponse.ok) {
+                    throw new Error(`Erro ao carregar .dic: ${dicResponse.status}`);
+                }
+                const dicText = await dicResponse.text();
+                console.log('Arquivo .dic carregado:', dicText.substring(0, 100) + '...');
+                
+                statusDiv.innerHTML = `
+                    <h2 style="color: green;">✅ Arquivos carregados com sucesso!</h2>
+                    <p><strong>Arquivo .aff:</strong> ${affText.length} caracteres</p>
+                    <p><strong>Arquivo .dic:</strong> ${dicText.length} caracteres</p>
+                    <p>Verifique o console para mais detalhes.</p>
+                `;
+                
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <h2 style="color: red;">❌ Erro ao carregar arquivos</h2>
+                    <p><strong>Erro:</strong> ${error.message}</p>
+                `;
+                console.error('Erro:', error);
+            }
+        }
+        
+        testDictionary();
+    </script>
+</body>
+</html> 
