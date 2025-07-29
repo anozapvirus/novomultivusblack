@@ -2887,9 +2887,7 @@ const handleMessage = async (
     } else {
       console.log("log... 2983")
       const unreads = await cacheLayer.get(`contacts:${contact.id}:unreads`);
-      // Corrigir cálculo de unreadMessages para evitar NaN
-      const currentUnreads = unreads ? parseInt(unreads.toString(), 10) : 0;
-      unreadMessages = currentUnreads + 1;
+      unreadMessages = +unreads + 1;
       await cacheLayer.set(
         `contacts:${contact.id}:unreads`,
         `${unreadMessages}`
@@ -3474,7 +3472,7 @@ const filterMessages = (msg: WAMessage): boolean => {
       WAMessageStubType.E2E_DEVICE_CHANGED,
       WAMessageStubType.E2E_IDENTITY_CHANGED,
       WAMessageStubType.CIPHERTEXT
-    ].includes(msg.messageStubType as any)
+    ].includes(msg.messageStubType)
   )
     return false;
 
