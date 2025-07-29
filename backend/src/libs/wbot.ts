@@ -11,7 +11,7 @@ import makeWASocket, {
   isJidBroadcast,
   isJidGroup,
   jidNormalizedUser,
-  makeCacheableSignalKeyStore,
+  makeCacheableSignalKeyStore
 } from "@whiskeysockets/baileys";
 import makeInMemoryStore from "@whiskeysockets/baileys";
 import { FindOptions } from "sequelize/types";
@@ -132,50 +132,15 @@ export const removeWbot = async (
   try {
     const sessionIndex = sessions.findIndex(s => s.id === whatsappId);
     if (sessionIndex !== -1) {
-      const session = sessions[sessionIndex];
-      
       if (isLogout) {
-        try {
-          // Remover todos os event listeners
-          session.ev.removeAllListeners("connection.update");
-          session.ev.removeAllListeners("creds.update");
-          session.ev.removeAllListeners("messaging-history.set");
-          
-          // Fazer logout da sessão
-          await session.logout();
-          
-          // Fechar conexão WebSocket
-          if (session.ws && (session.ws as any).readyState !== 3) { // 3 = CLOSED
-            (session.ws as any).close();
-          }
-          
-          // Limpar store se existir
-          if (session.store) {
-            session.store.chats.clear();
-            session.store.contacts = {};
-            session.store.messages = {};
-            session.store.groupMetadata = {};
-            session.store.presences = {};
-          }
-          
-          logger.info(`Sessão WhatsApp ${whatsappId} removida com sucesso`);
-        } catch (error) {
-          logger.error(`Erro ao fazer logout da sessão ${whatsappId}: ${error}`);
-        }
+        sessions[sessionIndex].logout();
+        sessions[sessionIndex].ws.close();
       }
 
-      // Remover da lista de sessões
       sessions.splice(sessionIndex, 1);
-      
-      // Limpar cache relacionado
-      msgRetryCounterCache.flushAll();
-      msgCache.flushAll();
-      
-      logger.info(`Sessão WhatsApp ${whatsappId} removida da lista`);
     }
   } catch (err) {
-    logger.error(`Erro ao remover sessão WhatsApp ${whatsappId}: ${err}`);
-    Sentry.captureException(err);
+    logger.error(err);
   }
 };
 
@@ -205,9 +170,7 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
         const { id, name, allowGroup, companyId } = whatsappUpdate;
 
         // const { version, isLatest } = await fetchLatestWaWebVersion({});
-        // const { version, isLatest } = await fetchLatestBaileysVersion();
-        const version: [number, number, number] = [2, 3000, 1025205472];
-        const isLatest = false;
+        const { version, isLatest } = await fetchLatestBaileysVersion();
         const versionB = [2, 2410, 1];
         logger.info(`Versão: v${version.join(".")}, isLatest: ${isLatest}`);
         logger.info(`Starting session ${name}`);
@@ -215,9 +178,10 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
 
         let wsocket: Session = null;
         const { state, saveCreds } = await useMultiFileAuthState(whatsapp);
+
         const store = makeInMemoryStore({
-          logger: loggerBaileys,
-          auth: state
+        logger: loggerBaileys,
+        auth: state
         });
 
         wsocket = makeWASocket({
@@ -242,37 +206,14 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
           defaultQueryTimeoutMs: undefined,
           msgRetryCounterCache,
           markOnlineOnConnect: false,
-          retryRequestDelayMs: 1000, // Aumentado de 500 para 1000
-          maxMsgRetryCount: 3, // Reduzido de 5 para 3
+          retryRequestDelayMs: 500,
+          maxMsgRetryCount: 5,
           emitOwnEvents: true,
           fireInitQueries: true,
-          transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 5000 }, // Aumentado delay
-          connectTimeoutMs: 60_000, // Aumentado de 25_000 para 60_000
-          keepAliveIntervalMs: 30_000, // Adicionado keep alive
+          transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
+          connectTimeoutMs: 25_000,
+          // keepAliveIntervalMs: 60_000,
           getMessage: msgDB.get,
-          // Configurações adicionais para estabilidade
-          patchMessageBeforeSending: (msg) => {
-            const requiresPatch = !!(
-              msg.buttonsMessage 
-              || msg.templateMessage
-              || msg.listMessage
-            );
-            if (requiresPatch) {
-              msg = {
-                viewOnceMessage: {
-                  message: {
-                    messageContextInfo: {
-                      deviceListMetadataVersion: 2,
-                      deviceListMetadata: {},
-                    },
-                    ...msg,
-                  },
-                },
-              };
-            }
-            return msg;
-          },
-          // Configurações de estabilidade melhoradas
         });
 
 
@@ -429,17 +370,7 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
                 `Socket  ${name} Connection Update ${connection || ""} ${lastDisconnect ? lastDisconnect.error.message : ""
                 }`
               );
-              
-              // Verificar tipo de erro de desconexão
-              const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-              const errorMessage = lastDisconnect?.error?.message || "";
-              const errorReason = (lastDisconnect?.error as any)?.data?.reason || "";
-              
-              logger.warn(`Connection closed for ${name}: Status=${statusCode}, Message=${errorMessage}, Reason=${errorReason}`);
-              
-              if (statusCode === 401 || statusCode === 403 || errorReason === "401" || errorReason === "403") {
-                // Erro de autenticação - limpar sessão e tentar reconectar
-                logger.warn(`Authentication error (${statusCode}) for ${name}, clearing session and retrying...`);
+              if ((lastDisconnect?.error as Boom)?.output?.statusCode === 403) {
                 await whatsapp.update({ status: "PENDING", session: "" });
                 await DeleteBaileysService(whatsapp.id);
                 await cacheLayer.delFromPattern(`sessions:${whatsapp.id}:*`);
@@ -449,39 +380,29 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
                     session: whatsapp
                   });
                 removeWbot(id, false);
-                
-                // Tentar reconectar após delay
-                setTimeout(
-                  () => StartWhatsAppSession(whatsapp, whatsapp.companyId),
-                  8000 // Delay para erros de autenticação
-                );
-              } else if (statusCode === 515 || errorMessage.includes("Stream Errored")) {
-                // Erro de stream - tentar reconectar com delay maior
-                logger.warn(`Stream error detected for ${name}, attempting reconnection...`);
+              }
+              if (
+                (lastDisconnect?.error as Boom)?.output?.statusCode !==
+                DisconnectReason.loggedOut
+              ) {
                 removeWbot(id, false);
                 setTimeout(
                   () => StartWhatsAppSession(whatsapp, whatsapp.companyId),
-                  12000 // Delay maior para stream errors
+                  2000
                 );
-              } else if (statusCode === DisconnectReason.loggedOut) {
-                // Logout normal - não tentar reconectar
-                logger.info(`Normal logout for ${name}`);
-                await whatsapp.update({ status: "PENDING", session: "" });
-                await DeleteBaileysService(whatsapp.id);
-                await cacheLayer.delFromPattern(`sessions:${whatsapp.id}:*`);
-                io.of(String(companyId))
-                  .emit(`company-${whatsapp.companyId}-whatsappSession`, {
-                    action: "update",
-                    session: whatsapp
-                  });
-                removeWbot(id, false);
               } else {
-                // Outros erros - reconexão normal
-                logger.warn(`Other error (${statusCode}) for ${name}, attempting reconnection...`);
+                await whatsapp.update({ status: "PENDING", session: "" });
+                await DeleteBaileysService(whatsapp.id);
+                await cacheLayer.delFromPattern(`sessions:${whatsapp.id}:*`);
+                io.of(String(companyId))
+                  .emit(`company-${whatsapp.companyId}-whatsappSession`, {
+                    action: "update",
+                    session: whatsapp
+                  });
                 removeWbot(id, false);
                 setTimeout(
                   () => StartWhatsAppSession(whatsapp, whatsapp.companyId),
-                  6000 // Delay para outros erros
+                  2000
                 );
               }
             }
@@ -515,9 +436,7 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
             }
 
             if (qr !== undefined) {
-              if (retriesQrCodeMap.get(id) && retriesQrCodeMap.get(id) >= 5) {
-                // Aumentado limite de tentativas de 3 para 5
-                logger.warn(`Max QR code retries reached for ${name}, stopping session`);
+              if (retriesQrCodeMap.get(id) && retriesQrCodeMap.get(id) >= 3) {
                 await whatsappUpdate.update({
                   status: "DISCONNECTED",
                   qrcode: ""
@@ -534,13 +453,13 @@ export const initWASocket = async (whatsapp: Whatsapp): Promise<Session> => {
                 wsocket = null;
                 retriesQrCodeMap.delete(id);
               } else {
-                logger.info(`Session QRCode Generate ${name} - Attempt ${(retriesQrCodeMap.get(id) || 0) + 1}`);
+                logger.info(`Session QRCode Generate ${name}`);
                 retriesQrCodeMap.set(id, (retriesQrCode += 1));
 
                 await whatsapp.update({
                   qrcode: qr,
                   status: "qrcode",
-                  retries: retriesQrCode,
+                  retries: 0,
                   number: ""
                 });
                 const sessionIndex = sessions.findIndex(
