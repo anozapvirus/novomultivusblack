@@ -44,7 +44,6 @@ import SendWhatsAppMessage from "./SendWhatsAppMessage";
 import sendFaceMessage from "../FacebookServices/sendFacebookMessage";
 import moment from "moment";
 import Queue from "../../models/Queue";
-import Company from "../../models/Company";
 import FindOrCreateATicketTrakingService from "../TicketServices/FindOrCreateATicketTrakingService";
 import VerifyCurrentSchedule from "../CompanyService/VerifyCurrentSchedule";
 import Campaign from "../../models/Campaign";
@@ -357,7 +356,7 @@ const getContactMessage = async (msg: proto.IWebMessageInfo, wbot: Session) => {
       name: msg.pushName
     }
     : {
-      id: msg.key.remoteJid, // usar remoteJid como identificador
+      id: msg.key.remoteJid,
       name: msg.key.fromMe ? rawNumber : msg.pushName
     };
 };
@@ -518,31 +517,31 @@ const verifyContact = async (
   wbot: Session,
   companyId: number
 ): Promise<Contact> => {
-  const remoteJid = msgContact.id;
-  const number = remoteJid.replace(/\D/g, "");
-  
-  let contact = await Contact.findOne({
-    where: { remoteJid, companyId }
-  });
 
-  if (!contact) {
-    // fallback para busca por number caso não encontre pelo remoteJid
-    contact = await Contact.findOne({
-      where: { number, companyId }
-    });
+  let profilePicUrl: string = "";
+  // try {
+  //   profilePicUrl = await wbot.profilePictureUrl(msgContact.id, "image");
+  // } catch (e) {
+  //   Sentry.captureException(e);
+  //   profilePicUrl = `${process.env.FRONTEND_URL}/nopicture.png`;
+  // }
+
+  const contactData = {
+    name: msgContact.name || msgContact.id.replace(/\D/g, ""),
+    number: msgContact.id.replace(/\D/g, ""),
+    profilePicUrl,
+    isGroup: msgContact.id.includes("g.us"),
+    companyId,
+    remoteJid: msgContact.id,
+    whatsappId: wbot.id,
+    wbot
+  };
+
+  if (contactData.isGroup) {
+    contactData.number = msgContact.id.replace("@g.us", "");
   }
 
-  if (!contact) {
-    contact = await CreateOrUpdateContactService({
-      name: msgContact.name,
-      number, // apenas informativo
-      remoteJid,
-      profilePicUrl: "",
-      isGroup: false,
-      companyId,
-      wbot
-    });
-  }
+  const contact = await CreateOrUpdateContactService(contactData);
 
   return contact;
 };
@@ -1104,8 +1103,9 @@ const handleOutsideBusinessHours = async (
   ticket: Ticket,
   contact: Contact,
   settings?: any,
-  ticketTraking?: TicketTraking
-): Promise<boolean> => {
+  ticketTraking?: TicketTraking,
+  isOutsideBusinessHours?: boolean
+) => {
   
   let selectedOption;
   selectedOption =
@@ -1113,85 +1113,66 @@ const handleOutsideBusinessHours = async (
     msg?.message?.listResponseMessage?.singleSelectReply.selectedRowId ||
     getBodyMessage(msg);
 
-    console.log("=== VERIFICAÇÃO DE HORÁRIO DE FUNCIONAMENTO ===");
-    console.log("selectedOption:", selectedOption);
+  if (isOutsideBusinessHours) {
+    console.log("isOutsideBusinessHours", isOutsideBusinessHours);
+    console.log("selectedOption", selectedOption);
  
-    try {
-      // Verifica se o sistema de horário está ativado
-      if (!settings?.scheduleType || settings.scheduleType === "disabled") {
-        console.log("Sistema de horário desabilitado");
-      return false;
-      }
 
-      let currentSchedule = null;
-      let outOfHoursMessage = "";
-
-      // Verifica o tipo de configuração e busca o horário apropriado
-      if (settings.scheduleType === "company") {
-        // Horário por empresa
-        const company = await Company.findByPk(ticket.companyId);
-        if (company) {
-          currentSchedule = await VerifyCurrentSchedule(ticket.companyId, 0, 0);
-          outOfHoursMessage = company.outOfHoursMessage;
-          console.log("Verificando horário da empresa:", company.name);
-        }
-      } else if (settings.scheduleType === "queue" && ticket.queueId) {
-        // Horário por fila
+    // Procura a fila de acordo com o ID do ticket
     const queue = await Queue.findByPk(ticket.queueId);
+    console.log("queues", queue);
     if (queue) {
-          currentSchedule = await VerifyCurrentSchedule(ticket.companyId, ticket.queueId, 0);
-          outOfHoursMessage = queue.outOfHoursMessage;
-          console.log("Verificando horário da fila:", queue.name);
-        }
-      } else if (settings.scheduleType === "connection" && ticket.whatsappId) {
-        // Horário por conexão
-        const whatsapp = await Whatsapp.findByPk(ticket.whatsappId);
-        if (whatsapp) {
-          currentSchedule = await VerifyCurrentSchedule(ticket.companyId, 0, ticket.whatsappId);
-          outOfHoursMessage = whatsapp.outOfHoursMessage;
-          console.log("Verificando horário da conexão:", whatsapp.name);
-      }
-      }
+     console.log("outOfHoursMessage", queue.outOfHoursMessage)
+      const { schedules }: any = queue;
+      const now = moment();
+      const weekday = now.format("dddd").toLowerCase();
+      let schedule;
 
-      console.log("Current Schedule:", currentSchedule);
-      console.log("Out of Hours Message:", outOfHoursMessage);
-
-      // Se não encontrou configuração ou está fora do horário
-      if (!currentSchedule || !currentSchedule.inActivity) {
-        console.log("ENVIANDO MENSAGEM DE AUSÊNCIA - Fora do horário de funcionamento");
-        
-        const defaultMessage = "Estamos fora do horário de funcionamento. Retornaremos em breve.";
-        const messageToSend = outOfHoursMessage || defaultMessage;
-        
-        const textMessage = {
-          text: formatBody(messageToSend, ticket),
-        };
-
-              await wbot.sendMessage(
-          `${ticket?.contact?.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
-          textMessage
+      if (Array.isArray(schedules) && schedules.length > 0) {
+        schedule = schedules.find(
+          s =>
+            s.weekdayEn === weekday &&
+            s.startTime !== "" &&
+            s.startTime !== null &&
+            s.endTime !== "" &&
+            s.endTime !== null
         );
-
-        // Marca o ticket como fora do horário
-        await ticket.update({
-          isOutOfHour: true
-        });
-
-        console.log("Mensagem de ausência enviada com sucesso");
-        return true; // Retorna true indicando que está fora do horário
-      } else {
-        console.log("Dentro do horário de funcionamento");
-        // Se estava marcado como fora do horário, remove a marcação
-        if (ticket.isOutOfHour) {
-          await ticket.update({
-            isOutOfHour: false
-          });
-        }
-      return false; // Retorna false indicando que está dentro do horário
       }
-    } catch (error) {
-      console.error("Erro ao verificar horário de funcionamento:", error);
-    return false; // Em caso de erro, assume que está dentro do horário
+      console.log("schedule", schedule)
+      if (
+        queue.outOfHoursMessage &&
+        !isNil(schedule)
+      ) {
+        const now = moment();
+        
+        // Intervalos de horários
+        const startTimeA = moment(schedule.startTimeA, "HH:mm");
+        const endTimeA = moment(schedule.endTimeA, "HH:mm");
+        const startTimeB = moment(schedule.startTimeB, "HH:mm");
+        const endTimeB = moment(schedule.endTimeB, "HH:mm");
+      
+        // Verifica se o horário atual está fora dos dois intervalos
+        const isOutsideIntervalA = now.isBefore(startTimeA) || now.isAfter(endTimeA);
+        const isOutsideIntervalB = now.isBefore(startTimeB) || now.isAfter(endTimeB);
+      
+        if (isOutsideIntervalA && isOutsideIntervalB) {
+          const body = queue.outOfHoursMessage;
+          const debouncedSentMessage = debounce(
+            async () => {
+              await wbot.sendMessage(
+                `${contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
+                { text: body }
+              );
+            },
+            3000,
+            ticket.id
+          );
+          debouncedSentMessage();
+          return;
+        }
+      }
+      
+    }
   }
 };
 
@@ -3036,25 +3017,6 @@ const handleMessage = async (
   companyId: number,
   isImported: boolean = false,
 ): Promise<void> => {
-  const remoteJid = msg.key.remoteJid;
-  const number = remoteJid.replace(/\D/g, "");
-  
-  let contact = await Contact.findOne({
-    where: { remoteJid, companyId }
-  });
-
-  if (!contact) {
-    // fallback para busca por number caso não encontre pelo remoteJid
-    contact = await Contact.findOne({
-      where: { number, companyId }
-    });
-  }
-
-  if (!contact) {
-    // criar novo contato se não existir
-    const msgContact = await getContactMessage(msg, wbot);
-    contact = await verifyContact(msgContact, wbot, companyId);
-  }
 
   console.log("log... 2874")
 
@@ -3167,9 +3129,7 @@ const handleMessage = async (
     } else {
       console.log("log... 2983")
       const unreads = await cacheLayer.get(`contacts:${contact.id}:unreads`);
-      // Corrigir cálculo de unreadMessages para evitar NaN
-      const currentUnreads = unreads ? parseInt(unreads.toString(), 10) : 0;
-      unreadMessages = currentUnreads + 1;
+      unreadMessages = +unreads + 1;
       await cacheLayer.set(
         `contacts:${contact.id}:unreads`,
         `${unreadMessages}`
@@ -3407,14 +3367,11 @@ const handleMessage = async (
     }
 
     try {
-      // Verificação de horário já foi feita acima para tickets novos
-      // Esta verificação é apenas para tickets existentes que já têm fila
-      if (!msg.key.fromMe && settings.scheduleType && ticket.queueId && (!ticket.isGroup || whatsapp.groupAsTicket === "enabled") && !["open", "group"].includes(ticket.status)) {
+      if (!msg.key.fromMe && settings.scheduleType && (!ticket.isGroup || whatsapp.groupAsTicket === "enabled") && !["open", "group"].includes(ticket.status)) {
         /**
          * Tratamento para envio de mensagem quando a empresa está fora do expediente
-         * (apenas para tickets que já têm fila atribuída)
          */
-        console.log("log... 3280 - Verificação para ticket com fila existente")
+        console.log("log... 3280")
         if (
           (settings.scheduleType === "company" || settings.scheduleType === "connection") &&
           !isNil(currentSchedule) &&
@@ -3580,17 +3537,6 @@ const handleMessage = async (
     }
 
 
-      // PRIMEIRO: Verificar horário de funcionamento para tickets novos
-      if (!msg.key.fromMe && !ticket.userId && settings?.scheduleType && settings.scheduleType !== "disabled") {
-        console.log("=== VERIFICANDO HORÁRIO DE FUNCIONAMENTO ===");
-        const isOutsideHours = await handleOutsideBusinessHours(wbot, msg, ticket, contact, settings, ticketTraking);
-        
-        // Se está fora do horário, envia mensagem mas NÃO interrompe o fluxo
-        if (isOutsideHours === true) {
-          console.log("Fora do horário - mensagem enviada, continuando fluxo normal");
-        }
-      }
-
       console.log("antes do if do verifyqueue")
     console.log("Ticket Conditions:", {
       "No Queue": !ticket.queue,
@@ -3617,6 +3563,8 @@ const handleMessage = async (
           chatbotAt: moment().toDate(),
         })
       }
+    }else if(!msg.key.fromMe){
+      await handleOutsideBusinessHours(wbot, msg, ticket, contact, settings, ticketTraking, true);
     }
 
     if (ticket.queueId > 0) {
@@ -3824,39 +3772,89 @@ const verifyRecentCampaign = async (
   message: proto.IWebMessageInfo,
   companyId: number
 ) => {
-  const remoteJid = message.key.remoteJid;
-  const number = remoteJid.replace(/\D/g, "");
-  
-  const contact = await Contact.findOne({
-    where: { remoteJid, companyId }
-  });
-
-  if (!contact) {
-    // fallback para busca por number caso não encontre pelo remoteJid
-    return await Contact.findOne({
-      where: { number, companyId }
-    });
+  if (!isValidMsg(message)) {
+    return;
   }
+  if (!message.key.fromMe) {
+    const number = message.key.remoteJid.replace(/\D/g, "");
+    const campaigns = await Campaign.findAll({
+      where: { companyId, status: "EM_ANDAMENTO", confirmation: true }
+    });
+    if (campaigns) {
+      const ids = campaigns.map(c => c.id);
+      const campaignShipping = await CampaignShipping.findOne({
+        where: { campaignId: { [Op.in]: ids }, number, confirmation: null, deliveredAt: { [Op.ne]: null } }
+      });
 
-  return contact;
+      if (campaignShipping) {
+        await campaignShipping.update({
+          confirmedAt: moment(),
+          confirmation: true
+        });
+        await campaignQueue.add(
+          "DispatchCampaign",
+          {
+            campaignShippingId: campaignShipping.id,
+            campaignId: campaignShipping.campaignId
+          },
+          {
+            delay: parseToMilliseconds(randomValue(0, 10))
+          }
+        );
+      }
+    }
+  }
 };
 
 const verifyCampaignMessageAndCloseTicket = async (message: proto.IWebMessageInfo, companyId: number, wbot: Session) => {
-  const remoteJid = message.key.remoteJid;
-  const number = remoteJid.replace(/\D/g, "");
-  
-  const contact = await Contact.findOne({
-    where: { remoteJid, companyId }
-  });
-
-  if (!contact) {
-    // fallback para busca por number caso não encontre pelo remoteJid
-    return await Contact.findOne({
-      where: { number, companyId }
-    });
+  if (!isValidMsg(message)) {
+    return;
   }
 
-  return contact;
+
+
+  const io = getIO();
+  const body = await getBodyMessage(message);
+  const isCampaign = /\u200c/.test(body);
+
+  if (message.key.fromMe && isCampaign) {
+    let msgContact: IMe;
+    msgContact = await getContactMessage(message, wbot);
+    const contact = await verifyContact(msgContact, wbot, companyId);
+
+
+    const messageRecord = await Message.findOne({
+      where: {
+        [Op.or]: [
+          { wid: message.key.id! },
+          { contactId: contact.id }
+        ],
+        companyId
+      }
+    });
+
+    if (!isNull(messageRecord) || !isNil(messageRecord) || messageRecord !== null) {
+      const ticket = await Ticket.findByPk(messageRecord.ticketId);
+      await ticket.update({ status: "closed", amountUsedBotQueues: 0 });
+
+      io.of(String(companyId))
+        // .to("open")
+        .emit(`company-${companyId}-ticket`, {
+          action: "delete",
+          ticket,
+          ticketId: ticket.id
+        });
+
+      io.of(String(companyId))
+        // .to(ticket.status)
+        // .to(ticket.id.toString())
+        .emit(`company-${companyId}-ticket`, {
+          action: "update",
+          ticket,
+          ticketId: ticket.id
+        });
+    }
+  }
 };
 
 const filterMessages = (msg: WAMessage): boolean => {
@@ -3871,7 +3869,7 @@ const filterMessages = (msg: WAMessage): boolean => {
       WAMessageStubType.E2E_DEVICE_CHANGED,
       WAMessageStubType.E2E_IDENTITY_CHANGED,
       WAMessageStubType.CIPHERTEXT
-    ].includes(msg.messageStubType as any)
+    ].includes(msg.messageStubType)
   )
     return false;
 
@@ -3879,61 +3877,16 @@ const filterMessages = (msg: WAMessage): boolean => {
 };
 
 const wbotMessageListener = (wbot: Session, companyId: number): void => {
-  // Cache para evitar processamento duplicado de mensagens
-  const processedMessages = new Set<string>();
-  
-  // Limpeza periódica do cache
-  setInterval(() => {
-    processedMessages.clear();
-  }, 300000); // Limpar a cada 5 minutos
-
   wbot.ev.on("messages.upsert", async (messageUpsert: ImessageUpsert) => {
     const messages = messageUpsert.messages
       .filter(filterMessages)
-      .map(async msg => {
-        const remoteJid = msg.key.remoteJid;
-        const number = remoteJid.replace(/\D/g, "");
-        
-        // Verificar se a mensagem já foi processada
-        const messageKey = `${msg.key.id}-${companyId}`;
-        if (processedMessages.has(messageKey)) {
-          return null;
-        }
-        processedMessages.add(messageKey);
-        
-        // buscar contato por remoteJid primeiro
-        let contact = await Contact.findOne({
-          where: { remoteJid, companyId }
-        });
+      .map(msg => msg);
 
-        if (!contact) {
-          // fallback para busca por number caso não encontre pelo remoteJid
-          contact = await Contact.findOne({
-            where: { number, companyId }
-          });
-        }
+    if (!messages) return;
 
-        if (!contact) {
-          // criar novo contato se não existir
-          const msgContact = await getContactMessage(msg, wbot);
-          contact = await verifyContact(msgContact, wbot, companyId);
-        }
-        
-        return { ...msg, contact };
-      });
-    
-    const processedMessagesWithContacts = await Promise.all(messages);
-    const validMessages = processedMessagesWithContacts.filter(msg => msg !== null);
+    // console.log("CIAAAAAAA WBOT " , companyId)
+    messages.forEach(async (message: proto.IWebMessageInfo) => {
 
-    if (!validMessages || validMessages.length === 0) return;
-
-    // Processar mensagens em lotes para melhor performance
-    const batchSize = 10;
-    for (let i = 0; i < validMessages.length; i += batchSize) {
-      const batch = validMessages.slice(i, i + batchSize);
-      
-      await Promise.all(batch.map(async (message: proto.IWebMessageInfo) => {
-        try {
       if (message?.messageStubParameters?.length && message.messageStubParameters[0].includes('absent')) {
         const msg = {
           companyId: companyId,
@@ -3942,7 +3895,6 @@ const wbotMessageListener = (wbot: Session, companyId: number): void => {
         }
         logger.warn("MENSAGEM PERDIDA", JSON.stringify(msg));
       }
-          
       const messageExists = await Message.count({
         where: { wid: message.key.id!, companyId }
       });
@@ -3960,22 +3912,18 @@ const wbotMessageListener = (wbot: Session, companyId: number): void => {
         }
 
         if (!isCampaign) {
-              if (REDIS_URI_MSG_CONN !== '') {
+          if (REDIS_URI_MSG_CONN !== '') {//} && (!message.key.fromMe || (message.key.fromMe && !message.key.id.startsWith('BAE')))) {
             try {
               await BullQueues.add(`${process.env.DB_NAME}-handleMessage`, { message, wbot: wbot.id, companyId }, {
                 priority: 1,
-                    jobId: `${wbot.id}-handleMessage-${message.key.id}`,
-                    removeOnComplete: true,
-                    removeOnFail: false
+                jobId: `${wbot.id}-handleMessage-${message.key.id}`
+
               });
             } catch (e) {
-                  logger.error(`Erro ao adicionar mensagem à fila: ${e}`);
               Sentry.captureException(e);
-                  // Fallback: processar diretamente se a fila falhar
-                  console.log("Fallback: processando mensagem diretamente");
-                  await handleMessage(message, wbot, companyId);
             }
           } else {
+            console.log("log... 3970")
             await handleMessage(message, wbot, companyId);
           }
         }
@@ -3983,52 +3931,43 @@ const wbotMessageListener = (wbot: Session, companyId: number): void => {
         await verifyRecentCampaign(message, companyId);
         await verifyCampaignMessageAndCloseTicket(message, companyId, wbot);
       }
-        } catch (error) {
-          logger.error(`Erro ao processar mensagem ${message.key.id}: ${error}`);
-          Sentry.captureException(error);
-        }
-      }));
-    }
 
-    // Processar mensagens de grupo separadamente
-    const groupMessages = validMessages.filter(msg => msg.key.remoteJid?.endsWith("@g.us"));
-    if (groupMessages.length > 0) {
-      await Promise.all(groupMessages.map(async (message) => {
-        try {
+      if (message.key.remoteJid?.endsWith("@g.us")) {
         if (REDIS_URI_MSG_CONN !== '') {
-            await BullQueues.add(`${process.env.DB_NAME}-handleMessageAck`, { msg: message, chat: 2 }, {
+          BullQueues.add(`${process.env.DB_NAME}-handleMessageAck`, { msg: message, chat: 2 }, {
             priority: 1,
-              jobId: `${wbot.id}-handleMessageAck-${message.key.id}`,
-              removeOnComplete: true,
-              removeOnFail: false
-            });
+            jobId: `${wbot.id}-handleMessageAck-${message.key.id}`
+          })
         } else {
-            await handleMsgAck(message, 2);
+          handleMsgAck(message, 2)
         }
-        } catch (error) {
-          logger.error(`Erro ao processar ACK de grupo: ${error}`);
-          Sentry.captureException(error);
-        }
-      }));
-    }
+      }
+
+    });
+
+    // messages.forEach(async (message: proto.IWebMessageInfo) => {
+    //   const messageExists = await Message.count({
+    //     where: { id: message.key.id!, companyId }
+    //   });
+
+    //   if (!messageExists) {
+    //     await handleMessage(message, wbot, companyId);
+    //     await verifyRecentCampaign(message, companyId);
+    //     await verifyCampaignMessageAndCloseTicket(message, companyId);
+    //   }
+    // });
   });
 
   wbot.ev.on("messages.update", (messageUpdate: WAMessageUpdate[]) => {
     if (messageUpdate.length === 0) return;
-    
-    // Processar atualizações em lotes
-    const batchSize = 5;
-    for (let i = 0; i < messageUpdate.length; i += batchSize) {
-      const batch = messageUpdate.slice(i, i + batchSize);
-      
-      batch.forEach(async (message: WAMessageUpdate) => {
-        try {
-          (wbot as WASocket)!.readMessages([message.key]);
+    messageUpdate.forEach(async (message: WAMessageUpdate) => {
 
-          const msgUp = { ...messageUpdate };
+      (wbot as WASocket)!.readMessages([message.key])
+
+      const msgUp = { ...messageUpdate }
 
       if (msgUp['0']?.update.messageStubType === 1 && msgUp['0']?.key.remoteJid !== 'status@broadcast') {
-            await MarkDeleteWhatsAppMessage(msgUp['0']?.key.remoteJid, null, msgUp['0']?.key.id, companyId);
+        MarkDeleteWhatsAppMessage(msgUp['0']?.key.remoteJid, null, msgUp['0']?.key.id, companyId)
       }
 
       let ack;
@@ -4039,34 +3978,36 @@ const wbotMessageListener = (wbot: Session, companyId: number): void => {
       }
 
       if (REDIS_URI_MSG_CONN !== '') {
-            await BullQueues.add(`${process.env.DB_NAME}-handleMessageAck`, { msg: message, chat: ack }, {
+        BullQueues.add(`${process.env.DB_NAME}-handleMessageAck`, { msg: message, chat: ack }, {
           priority: 1,
-              jobId: `${wbot.id}-handleMessageAck-${message.key.id}`,
-              removeOnComplete: true,
-              removeOnFail: false
-            });
-          } else {
-            await handleMsgAck(message, ack);
+          jobId: `${wbot.id}-handleMessageAck-${message.key.id}`
+        })
       }
-        } catch (error) {
-          logger.error(`Erro ao processar atualização de mensagem: ${error}`);
-          Sentry.captureException(error);
-        }
-      });
-    }
+      else {
+        handleMsgAck(message, ack);
+      }
+    });
   });
 
+  // wbot.ev.on('message-receipt.update', (events: any) => {
+  //   events.forEach(async (msg: any) => {
+  //     const ack = msg?.receipt?.receiptTimestamp ? 3 : msg?.receipt?.readTimestamp ? 4 : 0;
+  //     if (!ack) return;
+  //     await handleMsgAck(msg, ack);
+  //   });
+  // })
+  // wbot.ev.on("presence.update", (events: any) => {
+  //   console.log(events)
+  // })
+
   wbot.ev.on("contacts.update", (contacts: any) => {
-    if (!contacts || contacts.length === 0) return;
-    
     contacts.forEach(async (contact: any) => {
-      try {
-        if (!contact?.id) return;
+      if (!contact?.id) return
 
       if (typeof contact.imgUrl !== 'undefined') {
         const newUrl = contact.imgUrl === ""
           ? ""
-            : await wbot!.profilePictureUrl(contact.id!).catch(() => null);
+          : await wbot!.profilePictureUrl(contact.id!).catch(() => null)
         const contactData = {
           name: contact.id.replace(/\D/g, ""),
           number: contact.id.replace(/\D/g, ""),
@@ -4076,27 +4017,26 @@ const wbotMessageListener = (wbot: Session, companyId: number): void => {
           profilePicUrl: newUrl,
           whatsappId: wbot.id,
           wbot: wbot
-          };
-
-          await CreateOrUpdateContactService(contactData);
         }
-      } catch (error) {
-        logger.error(`Erro ao atualizar contato: ${error}`);
-        Sentry.captureException(error);
+
+        await CreateOrUpdateContactService(contactData)
       }
     });
-  });
-
+  })
   wbot.ev.on("groups.update", (groupUpdate: GroupMetadata[]) => {
-    if (!groupUpdate || groupUpdate.length === 0 || !groupUpdate[0]?.id) return;
-    
+    if (!groupUpdate[0]?.id) return
+    if (groupUpdate.length === 0) return;
     groupUpdate.forEach(async (group: GroupMetadata) => {
-      try {
       const number = group.id.replace(/\D/g, "");
       const nameGroup = group.subject || number;
 
       let profilePicUrl: string = "";
-        
+      // try {
+      //   profilePicUrl = await wbot.profilePictureUrl(group.id, "image");
+      // } catch (e) {
+      //   Sentry.captureException(e);
+      //   profilePicUrl = `${process.env.FRONTEND_URL}/nopicture.png`;
+      // }
       const contactData = {
         name: nameGroup,
         number: number,
@@ -4108,13 +4048,10 @@ const wbotMessageListener = (wbot: Session, companyId: number): void => {
         wbot: wbot
       };
 
-        await CreateOrUpdateContactService(contactData);
-      } catch (error) {
-        logger.error(`Erro ao atualizar grupo: ${error}`);
-        Sentry.captureException(error);
-      }
+      const contact = await CreateOrUpdateContactService(contactData);
+
     });
-  });
+  })
 };
 
 export { wbotMessageListener, handleMessage, isValidMsg, getTypeMessage, handleMsgAck };
